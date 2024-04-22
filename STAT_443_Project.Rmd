@@ -1,0 +1,416 @@
+---
+title: "STAT 443 Project"
+author: "Group 30"
+date: "2024-03-18"
+output: 
+    pdf_document :
+      latex_engine : xelatex 
+editor_options: 
+  chunk_output_type: inline
+---
+
+
+
+
+\newpage
+
+```{r setup, include=FALSE}
+## Put commands you do not want to be printed here 
+knitr::opts_chunk$set(echo = TRUE)
+library("randtests")
+library("astsa")
+library("forecast")
+library("glmnet")
+doPDF <- FALSE # logical if pdfs of plots shall be produced 
+```
+
+
+
+## Data Description:
+
+The data is retrieved from https://climatedata.ca/download/#station-download selecting KITCHENER/WATERLOO as station and date ranging from 2014-Jan-01 to 2024-Jan-31. The are 17 dates in this range missing data, which are filled by taking the average of 3 days prior to and 3 days after the date (done in Excel). After filling missing data, they are then aggregated from daily to monthly average.
+
+```{r}
+# Read Data
+dat<-read.csv("Data_Group30.csv")
+Temp<-dat[,4]
+tsTemp<-ts(Temp, start = 2014, frequency = 12)
+plot(decompose(tsTemp))
+```
+Based on the decomposition plot, there is evident seasonal factor with period 12 in our data, and there might exist a trend.
+
+
+\newpage
+
+## Section 1: Split data into training and test sets
+
+```{r}
+# Training set: Jan 2014 to Jan 2023
+trn = window(tsTemp, start = c(2014, 1), end = c(2023, 1))
+# Test set: Feb 2023 to Jan 2024
+tst = window(tsTemp, start = c(2023, 2))
+
+# Plot of training and test set
+plot(trn, xlim = c(2014,2024), ylab = "Temperature")
+lines(tst, col = 2)
+legend(x = "bottomright",         
+       legend = c("Training Set", "Test Set"),  
+       lty = c(1, 1),           
+       col = c(1, 2),           
+       lwd = 2)  
+```
+
+
+
+
+
+
+\newpage
+
+## Section 2: Deciding candidate models
+
+The first model we will consider is a linear regression of orthogonal polynomials of t and seasonal factors. We will use 10 fold CV to determine best lambda, then use the best lambda to fit elastic net models for alpha = 0 (Ridge), alpha = 0.5, and alpha = 1 (LASSO).
+
+The second and third models will just be time series decompositions, the first being additive and the second being multiplicative.
+
+The fourth and fifth models are Holt-Winters since the algorithm can handle seasonality well. Likewise, both additive and multiplicative models are fitted.
+
+The sixth model is Sarima model with(0,0,0)(2,1,1).
+
+The seventh model is differencing at lag 12, which is the period in our observed data.
+
+\newpage
+
+## Section 3: Fitting models to training set
+```{r}
+# Model 1a to 1c: Polynomials + Seasonal Factors regression with elastic net
+tim<-time(trn)
+month<-as.factor(cycle(trn))
+
+# Try polynomial degrees 1 to 15
+Lambda0<-rep(NA,15)
+Lambda0.5<-rep(NA,15)
+Lambda1<-rep(NA,15)
+MSE0<-rep(NA,15)
+MSE0.5<-rep(NA,15)
+MSE1<-rep(NA,15)
+Log.Lambda.Seq = seq(-7, 3, by = 0.1)
+Lambda.Seq = c(0, exp(Log.Lambda.Seq))
+indx<-c(110:121)
+trndat<-dat[-indx,]
+
+# Seasonal indicators
+month2<-c(rep(c(0,1,0,0,0,0,0,0,0,0,0,0), 9), 0)
+month3<-c(rep(c(0,0,1,0,0,0,0,0,0,0,0,0), 9), 0)
+month4<-c(rep(c(0,0,0,1,0,0,0,0,0,0,0,0), 9), 0)
+month5<-c(rep(c(0,0,0,0,1,0,0,0,0,0,0,0), 9), 0)
+month6<-c(rep(c(0,0,0,0,0,1,0,0,0,0,0,0), 9), 0)
+month7<-c(rep(c(0,0,0,0,0,0,1,0,0,0,0,0), 9), 0)
+month8<-c(rep(c(0,0,0,0,0,0,0,1,0,0,0,0), 9), 0)
+month9<-c(rep(c(0,0,0,0,0,0,0,0,1,0,0,0), 9), 0)
+month10<-c(rep(c(0,0,0,0,0,0,0,0,0,1,0,0), 9), 0)
+month11<-c(rep(c(0,0,0,0,0,0,0,0,0,0,1,0), 9), 0)
+month12<-c(rep(c(0,0,0,0,0,0,0,0,0,0,0,1), 9), 0)
+months<-cbind(month2, month3, month4, month5, month6, 
+              month7, month8, month9, month10, month11, month12)
+
+# Use MSE to find best lambda
+for (deg in 1:15) {
+  pol<-poly(dat$Tim,deg)
+  poltrn<-pol[-indx,]
+  poltst<-pol[indx,]
+  CV0<-cv.glmnet(as.matrix(cbind(0,poltrn, months)) 
+                 , trndat$Temp, alpha=0, lambda = Lambda.Seq, nfolds = 10)
+  Lambda0[deg]<-CV0$lambda.1se
+  CV0.5<-cv.glmnet(as.matrix(cbind(0,poltrn, months)) 
+                   , trndat$Temp, alpha=0.5, lambda = Lambda.Seq, nfolds = 10)
+  Lambda0.5[deg]<-CV0.5$lambda.1se
+  CV1<-cv.glmnet(as.matrix(cbind(0,poltrn, months)) 
+                 , trndat$Temp, alpha=1, lambda = Lambda.Seq, nfolds = 10)
+  Lambda1[deg]<-CV1$lambda.1se
+
+  MSE0[deg]<-CV0$cvm[CV0$lambda == CV0$lambda.1se]
+  
+  MSE0.5[deg]<-CV0.5$cvm[CV0.5$lambda == CV0.5$lambda.1se]
+  
+  MSE1[deg]<-CV1$cvm[CV1$lambda == CV1$lambda.1se]
+}
+plot(Lambda0, xlab = "p", ylab = "Lambda", main = "Lambda vs p, Alpha = 0")
+plot(Lambda0.5, xlab = "p", ylab = "Lambda", main = "Lambda vs p, Alpha = 0.5")
+plot(Lambda1, xlab = "p", ylab = "Lambda", main = "Lambda vs p, Alpha = 1")
+plot(MSE0, xlab = "p", ylab = "MSE", main = "MSE vs p, Alpha = 0")
+plot(MSE0.5, xlab = "p", ylab = "MSE", main = "MSE vs p, Alpha = 0.5")
+plot(MSE1, xlab = "p", ylab = "MSE", main = "MSE vs p, Alpha = 1")
+
+# Model selection for Alpha = 0, 0.5, 1, respectively in elastic net
+which.min(MSE0)
+which.min(MSE0.5)
+which.min(MSE1)
+
+
+# Model 1a: Alpha = 0 (Ridge)
+fit.0.range=glmnet(as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE0)), months)) , trndat$Temp, alpha=0 , lambda=CV0$lambda.1se,
+                       standardize=TRUE, intercept = TRUE ,  family = "gaussian")
+Fitted.lam1se.0 = predict(fit.0.range,newx = 
+                            as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE0)), months)),type="response") 
+plot(trndat$Tim, Fitted.lam1se.0, xlab = "t", ylab = "Temperature", ylim = c(-10,25))
+points(trndat$Tim, trndat$Temp, col = 2)
+legend(x = "bottomright",         
+       legend = c("Fitted Elastic Net Model", "Training Set"),  
+       pch = c(1, 1),           
+       col = c(1,2),)
+
+# Model 1b: Alpha = 0.5
+fit.0.5.range=glmnet(as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE0.5)),  months)) , trndat$Temp, alpha=0 , lambda=CV0.5$lambda.1se,
+                       standardize=TRUE, intercept = TRUE ,  family = "gaussian")
+Fitted.lam1se.0.5 = predict(fit.0.5.range,newx = 
+                            as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE0.5)), months)),type="response")  
+plot(trndat$Tim, Fitted.lam1se.0.5, xlab = "t", ylab = "Temperature", ylim = c(-10,25))
+points(trndat$Tim, trndat$Temp, col = 2)
+legend(x = "bottomright",         
+       legend = c("Fitted Elastic Net Model", "Training Set"),  
+       pch = c(1, 1),           
+       col = c(1,2),)
+
+# Model 1c: Alpha = 1 (LASSO)
+fit.1.range=glmnet(as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE1)), months)) , trndat$Temp, alpha=0 , lambda=CV1$lambda.1se,
+                       standardize=TRUE, intercept = TRUE ,  family = "gaussian")
+Fitted.lam1se.1 = predict(fit.1.range,newx = 
+                            as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE1)), months)),type="response") 
+plot(trndat$Tim, Fitted.lam1se.1, xlab = "t", ylab = "Temperature", ylim = c(-10,25))
+points(trndat$Tim, trndat$Temp, col = 2)
+legend(x = "bottomright",         
+       legend = c("Fitted Elastic Net Model", "Training Set"),  
+       pch = c(1, 1),           
+       col = c(1,2),)
+
+# new month factors for prediction on test set
+month2.new<-c(rep(c(0,1,0,0,0,0,0,0,0,0,0,0), 10), 0)
+month3.new<-c(rep(c(0,0,1,0,0,0,0,0,0,0,0,0), 10), 0)
+month4.new<-c(rep(c(0,0,0,1,0,0,0,0,0,0,0,0), 10), 0)
+month5.new<-c(rep(c(0,0,0,0,1,0,0,0,0,0,0,0), 10), 0)
+month6.new<-c(rep(c(0,0,0,0,0,1,0,0,0,0,0,0), 10), 0)
+month7.new<-c(rep(c(0,0,0,0,0,0,1,0,0,0,0,0), 10), 0)
+month8.new<-c(rep(c(0,0,0,0,0,0,0,1,0,0,0,0), 10), 0)
+month9.new<-c(rep(c(0,0,0,0,0,0,0,0,1,0,0,0), 10), 0)
+month10.new<-c(rep(c(0,0,0,0,0,0,0,0,0,1,0,0), 10), 0)
+month11.new<-c(rep(c(0,0,0,0,0,0,0,0,0,0,1,0), 10), 0)
+month12.new<-c(rep(c(0,0,0,0,0,0,0,0,0,0,0,1), 10), 0)
+months.new<-cbind(month2.new, month3.new, month4.new, 
+                  month5.new, month6.new, month7.new, month8.new, 
+                  month9.new, month10.new, month11.new, month12.new)
+
+
+
+# Model 2: Time Series Decomposition (Additive)
+M2 <- decompose(trn, type = "additive")
+
+# Model 3: Time Series Decomposition (Multiplicative)
+M3 <- decompose(trn, type = "multiplicative")
+
+# Model 4: Holt-Winters (Additive)
+M4<-HoltWinters(trn, seasonal = "additive")
+
+# Model 5: Holt-Winters (Multiplicative)
+M5<-HoltWinters(trn, seasonal = "multiplicative")
+
+# Model 7: Differencing
+M7 <- diff(trn, 12)
+```
+
+Box-Jenkins
+
+```{r}
+par(mfrow=c(1,2))
+acf(trn)
+pacf(trn)
+```
+```{r}
+par(mfrow=c(1,2))
+diff_data <- diff(trn, lag = 12)
+
+acf(diff_data, lag.max = 120)
+pacf(diff_data, lag.max = 120)
+```
+
+We did a seasonal difference to the data and would say now data is stationary and ready to fit a Sarima model.
+There is no outstanding spikes for regular lags, and for seasonal lags the ACF cuts off at lag 1, and PACF cuts off at lag 3, thus we propose models SARIMA(0,0,0)(0,1,1)， SARIMA(0,0,0)(3,1,0), SARIMA(0,0,0)(3,1,1) as well as using the auto.arima function.
+```{r}
+# For an additional model
+M8 <- auto.arima(trn)
+M8
+
+M8 <- sarima(trn, p = 0, d = 0, q = 0, P = 2, D = 1, Q = 1, S = 12)
+M9 <- sarima(trn, p = 0, d = 0, q = 0, P = 0, D = 1, Q = 1, S = 12)
+M10 <- sarima(trn, p = 0, d = 0, q = 0, P = 3, D = 1, Q = 0, S = 12)
+M11 <- sarima(trn, p = 0, d = 0, q = 0, P = 3, D = 1, Q = 1, S = 12)
+
+
+# AIC/ BIC values
+c(M8$ICs[1], M9$ICs[1], M10$ICs[1], M11$ICs[1])
+c(M8$ICs[2], M9$ICs[2], M10$ICs[2], M11$ICs[2])
+c(M8$ICs[3], M9$ICs[3], M10$ICs[3], M11$ICs[3])
+```
+Looks that M8 is best by AIC, and AICc, and M9 is best by BIC.
+
+
+\newpage
+
+## Section 4: Model residual diagnostics
+```{r}
+residual.test<-function(residuals){
+  pval<-rep(NA,4)
+  # plot residual vs. time 
+  plot(residuals, main = "Residual vs. Time")
+  abline(h = 0, col=2)
+  # acf
+  acf(residuals)
+  # Normal qq plot
+  qqnorm(residuals, pch = 1, frame = FALSE)
+  qqline(residuals, col = 2, lwd = 2)
+  # Shapiro-Wilk test of Normality
+  pval[1]<-shapiro.test(residuals)$p.value
+  # Fligner-Killeen test of Constant Variance (11 segments)
+  len = length(residuals)
+  seg1 = round(len/11)
+  seg2 = len - 10 * seg1
+  segments = factor(c(rep(1:10,each = seg1), rep(11,seg2)))
+  pval[2]<-fligner.test(residuals, segments)$p.value
+  # Fligner-Killeen test of Constant Variance (5 segments)
+  len = length(residuals)
+  seg1 = round(len/5)
+  seg2 = len - 4 * seg1
+  segments = factor(c(rep(1:4,each = seg1), rep(5,seg2)))
+  pval[3]<-fligner.test(residuals, segments)$p.value
+  # Difference Sign Test
+  pval[4]<-randtests::runs.test(residuals, plot = FALSE)$p.value
+  testnames<-c("Shapiro_Normality", "Fligner_Variance1", 
+                    "Fligner_Variance2","Runs.Test_Random")
+  ret<-data.frame(testnames, pval)
+  return(ret)
+}
+
+# Model 1a: Polynomials + Seasonal Factors regression with Alpha = 0 (Ridge)
+residuals.M1a <- predict(fit.0.range,newx = 
+  as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE0)), months)),type="response") - trndat$Temp
+residual.test(residuals.M1a)
+
+# Model 1b: Polynomials + Seasonal Factors regression with Alpha = 0.5 
+residuals.M1b <- predict(fit.0.5.range,newx = 
+  as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE0.5)), months)),type="response") - trndat$Temp
+residual.test(residuals.M1b)
+
+# Model 1c: Polynomials + Seasonal Factors regression with Alpha = 1 (LASSO)
+residuals.M1c <- predict(fit.1.range,newx = 
+  as.matrix(cbind(0,poly(trndat$Tim,which.min(MSE1)), months)),type="response") - trndat$Temp
+residual.test(residuals.M1c)
+
+# Model 2: Time Series Decomposition (Additive)
+residuals.M2 <- na.omit(M2$random)
+residual.test(residuals.M2)
+
+# Model 3: Time Series Decomposition (Multiplicative)
+residuals.M3 <- na.omit(M3$random)
+residual.test(residuals.M3)
+
+# Model 4: Holt-Winters (Additive)
+residuals.M4 <- M4$fitted[,1]-trn
+residual.test(residuals.M4)
+
+# Model 5: Holt-Winters (Multiplicative)
+residuals.M5 <- M5$fitted[,1]-trn
+residual.test(residuals.M5)
+
+# Model 7: Differencing
+residuals.M7 <- M7
+residual.test(residuals.M7)
+
+# Model 8: Sarima(0,0,0)(2,1,1)12
+residuals.M8 <- M8$fit$residuals
+residual.test(residuals.M8)
+
+# Model 9: Sarima(0,0,0)(0,1,1)12
+residuals.M9 <- M9$fit$residuals
+residual.test(residuals.M9)
+
+# Model 10: Sarima(0,0,0)(3,1,0)12
+residuals.M10 <- M10$fit$residuals
+residual.test(residuals.M10)
+
+# Model 11: Sarima(0,0,0)(3,1,1)12
+residuals.M11 <- M11$fit$residuals
+residual.test(residuals.M11)
+```
+
+
+\newpage
+
+## Section 5: Model selection and prediction
+
+Since M2, M4 and M7 pass all residual tests, we calculate APSE of them and select the model with smallest APSE.
+```{r}
+# Model 2
+suppressWarnings({ 
+  M2Pred<-predict(M2$seasonal+M2$trend, 18)
+  MSE.M2<-mean((((M2Pred$upper+M2Pred$lower)/2)[7:18]-tst)^2)
+})
+
+# Model 4
+M4.error<-predict(M4,12) - tst
+MSE.M4<-mean((predict(M4,12) - tst)^2)
+
+# Model 7
+M7.pred<-trn[98:109]+0.2726588
+MSE.M7<-mean((M7.pred - tst)^2)
+
+# Compare APSE
+c(MSE.M2, MSE.M4, MSE.M7)
+
+# (Aside) APSE of Polynomial regression with elastic net
+  #Note 1: They all fail Shapiro normality test
+  #Note 2: Since cv.glmnet has randomness, the optimal model and optimal alpha
+  #        changes each time the code is run, but they yield better APSE
+  #        than the above 3 models
+
+# Model 1a: Polynomials + Seasonal Factors regression with Alpha = 0 (Ridge)
+Error0<-(predict(fit.0.range,newx = 
+  as.matrix(cbind(0,poly(dat$Tim,which.min(MSE0)), months.new)),type="response")
+  -dat$Temp)[110:121]
+APSE0<-mean(Error0^2)
+
+# Model 1b: Polynomials + Seasonal Factors regression with Alpha = 0.5
+Error0.5<-(predict(fit.0.5.range,newx = 
+  as.matrix(cbind(0,poly(dat$Tim,which.min(MSE0.5)), months.new)),type="response")
+  -dat$Temp)[110:121]
+APSE0.5<-mean(Error0.5^2)
+
+# Model 1c: Polynomials + Seasonal Factors regression with Alpha = 1 (LASSO)
+Error1<-(predict(fit.1.range,newx = 
+  as.matrix(cbind(0,poly(dat$Tim,which.min(MSE1)), months.new)),type="response")
+  -dat$Temp)[110:121]
+APSE1<-mean(Error1^2)
+
+# Note the APSE is better than M2, M4 and M7, although fails normality test
+c(APSE0, APSE0.5, APSE1)
+```
+
+We end up choosing Model 4 as it has lowest APSE. Model 2 has close, but it does have poor prediction power due to it being based on Moving Averages.
+
+Choosing Model 4, and doing predictions on it for the following 2 years, we have:
+
+```{r}
+plot(tsTemp, xlim = c(2014, 2026), ylim = c(-15, 30), 
+     main = "Temperature vs. Time", 
+     ylab = "Temperature (\u00B0C)", xlab = "Time (Monthly)")
+predict.window = predict(M4, n.ahead = 36, 
+                         prediction.interval = TRUE, level = 0.95)
+predict.window = predict.window[13:36,] # Only future predictions
+lines(seq(from = 2024, to = 2026 - 1/12, by = 1/12), 
+      predict.window[,1], col = "red", pch = 16, cex = 0.5) # Fit
+lines(seq(from = 2024, to = 2026 - 1/12, by = 1/12), 
+      predict.window[,2], col = "black", lty = 2) # Upper
+lines(seq(from = 2024, to = 2026 - 1/12, by = 1/12), 
+      predict.window[,3], col = "black", lty = 2) # Lower
+```
+
+
